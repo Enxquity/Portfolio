@@ -2,7 +2,7 @@
 
 RongoDB is a MongoDB wrapper via HTTP requests allowing for a faster, more organised and easily editable alternative to Roblox DatastoreService.
 
-It currently only consists of the findOne endpoint though any new ones can be easily added via the Endpoints.lua file and functions can be easily created.
+It has all the endpoints that the MongoDB Data API offers.
 
 --]]
 
@@ -14,9 +14,9 @@ export type Authentication = {
 }
 
 export type Payload = {
-    Cluster: string;
-    Database: string;
-    Collection: string;
+    Cluster: string?;
+    Database: string?;
+    Collection: string?;
 }
 
 export type Connection = {
@@ -25,14 +25,36 @@ export type Connection = {
     SetCluster: (self: Connection, Cluster: string) -> ();
     SetDatabase: (self: Connection, Database: string) -> ();
     SetCollection: (self: Connection, Collection: string) -> ();
-    FindOne: (self: Connection, Filter: {[string]: string}) -> ({any: any}?);
-    Find: (self: Connection, Filter: {[string]: string}) -> ({any: any}?);
+    FindOne: (self: Connection, Filter: {[string]: string | number | boolean}?) -> ({any: any}?);
+	Find: (self: Connection, Filter: {[string]: string | number | boolean}?) -> ({any: any}?);
+	InsertOne: (self: Connection, Document: {[string]: string | number | boolean}?) -> (boolean)?;
+	InsertMany: (self: Connection, Document: {[string]: string | number | boolean}?) -> (boolean)?;
+	UpdateOne: (self: Connection, Filter: {[string]: string | number | boolean}, Update: {["$set"]: {[string]: string | number | boolean}}, Upsert: boolean) -> (boolean)?;
+	UpdateMany: (self: Connection, Filter: {[string]: string | number | boolean}, Update: {["$set"]: {[string]: string | number | boolean}}, Upsert: boolean) -> (boolean)?;
+	DeleteOne: (self: Connection, Filter: {[string]: string | number | boolean}?) -> ({any: any}?);
+	DeleteMany: (self: Connection, Filter: {[string]: string | number | boolean}?) -> ({any: any}?);
 }
 
-local RongoDB = {}
+local MongoRB = {
+	DataLogging = false
+}
 local Endpoints = require(script.Endpoints)
 
-function Request(Endpoint: string, Auth: Authentication, Data: any)
+function MongoRB.Encode(Data)
+	local EncodedData = HttpService:JSONEncode(Data)
+	
+	--// Forced changes
+	EncodedData = EncodedData:gsub('"filter":%[%]', '"filter":{}')
+	
+	return EncodedData
+end --// Forced to use a encoding method because of the way roblox deals with JSON Encoding
+
+function MongoRB.Request(Endpoint: string, Auth: Authentication, Data: any): {[number]: {}} | boolean | nil
+	-- Log the request details for debugging
+	if MongoRB.DataLogging == true then
+		print(Endpoint, Auth, MongoRB.Encode(Data))
+	end
+	
     local Success, Result = pcall(function()
         return HttpService:RequestAsync({
             Url = Auth.Url .. Endpoint;
@@ -43,24 +65,40 @@ function Request(Endpoint: string, Auth: Authentication, Data: any)
                 ["Accept"] = "application/json";
                 ["api-key"] = Auth.APIKey;
             };
-            Body = HttpService:JSONEncode(Data);
+			Body = MongoRB.Encode(Data);
         })
     end)
-
-    if not Success then
-        return warn(`Request failed! [Result: {Result}]`)
-    end
+	
+	-- Handle request failure
+	if not Success then
+		warn(`Request failed! [Result: {Result}]`)
+        return nil
+	end
+	
+	-- Handle empty find results
+	if Result.Body == '{"document":null}' then
+		return nil
+	end
 
     local Body = HttpService:JSONDecode(Result.Body)
-
-    if not Body["document"] then
-        return warn(`Invalid request: {Result.Body}`)
+	
+	-- Check for valid response structure
+    if not Body["documents"] and not Body["document"] and not Body["insertedId"] and not Body["modifiedCount"] then
+		warn(`Invalid request: {Result.Body}`)
+		return false
     end
 
-    return Body
+	return (
+			   Body["documents"] 
+			or Body["document"] 
+			or Body["insertedId"] and true 
+			or Body["insertedIds"] and true
+			or Body["modifiedCount"] and true
+			or nil
+		)
 end
 
-function RongoDB.ParseBody(Payload)
+function MongoRB.ParseBody(Payload)
     return {
         ["dataSource"] = Payload.Cluster;
         ["database"] = Payload.Database;
@@ -68,7 +106,7 @@ function RongoDB.ParseBody(Payload)
     }
 end
 
-function RongoDB.Authenticate(Url: string, APIKey: string) : Authentication
+function MongoRB.Authenticate(Url: string, APIKey: string) : Authentication
     assert(Url ~= nil, "Cannot authenticate: URL was not provided")
     assert(APIKey ~= nil, "Cannot authenticate: APIKey was not provided")
 
@@ -78,7 +116,7 @@ function RongoDB.Authenticate(Url: string, APIKey: string) : Authentication
     } :: Authentication
 end
 
-function RongoDB.Connect(Auth: Authentication)
+function MongoRB.Connect(Auth: Authentication)
     assert(Auth ~= nil, "Cannot connect: Authentication was not provided")
 
     local Connection = {
@@ -103,32 +141,130 @@ function RongoDB.Connect(Auth: Authentication)
     end
 
     function Connection:FindOne(Filter)
-        local DataBody = RongoDB.ParseBody(self.Payload)
+        local DataBody = MongoRB.ParseBody(self.Payload)
         DataBody["filter"] = Filter or {}
 
-        local Data = Request(
+        local Data = MongoRB.Request(
             Endpoints.FindOne,
             self.Authentication,
             DataBody
         )
 
-        return (Data and Data["document"]) or nil
+        return Data or nil
     end
 
     function Connection:Find(Filter)
-        local DataBody = RongoDB.ParseBody(self.Payload)
+        local DataBody = MongoRB.ParseBody(self.Payload)
         DataBody["filter"] = Filter or {}
 
-        local Data = Request(
+        local Data = MongoRB.Request(
             Endpoints.Find,
             self.Authentication,
             DataBody
         )
 
-        return (Data and Data["document"]) or nil
+        return Data
     end
+	
+	function Connection:InsertOne(Document)
+		if Document == nil or typeof(Document) ~= "table" then
+			return warn("Invalid document to insert.")
+		end
+		
+		local DataBody = MongoRB.ParseBody(self.Payload)
+		DataBody["document"] = Document
+		
+		local Data = MongoRB.Request(
+			Endpoints.InsertOne,
+			self.Authentication,
+			DataBody
+		)
+		
+		return Data
+	end
+	
+	function Connection:InsertMany(Documents)
+		if Documents == nil or typeof(Documents) ~= "table" then
+			return warn("Invalid document to insert.")
+		end
 
+		local DataBody = MongoRB.ParseBody(self.Payload)
+		DataBody["documents"] = Documents
+
+		local Data = MongoRB.Request(
+			Endpoints.InsertMany,
+			self.Authentication,
+			DataBody
+		)
+
+		return Data
+	end
+	
+	function Connection:UpdateOne(Filter, Update, Upsert)
+		if Update == nil or typeof(Update) ~= "table" then
+			return warn("Invalid update to apply.")
+		end
+
+		local DataBody = MongoRB.ParseBody(self.Payload)
+		DataBody["filter"] = Filter
+		DataBody["update"] = Update
+		DataBody["upsert"] = Upsert or false
+
+		local Data = MongoRB.Request(
+			Endpoints.UpdateOne,
+			self.Authentication,
+			DataBody
+		)
+
+		return Data
+	end
+	
+	function Connection:UpdateMany(Filter, Update, Upsert)
+		if Update == nil or typeof(Update) ~= "table" then
+			return warn("Invalid update to apply.")
+		end
+
+		local DataBody = MongoRB.ParseBody(self.Payload)
+		DataBody["filter"] = Filter
+		DataBody["update"] = Update
+		DataBody["upsert"] = Upsert or false
+
+		local Data = MongoRB.Request(
+			Endpoints.UpdateMany,
+			self.Authentication,
+			DataBody
+		)
+
+		return Data
+	end
+	
+	function Connection:DeleteOne(Filter)
+		local DataBody = MongoRB.ParseBody(self.Payload)
+		DataBody["filter"] = Filter or {}
+
+		local Data = MongoRB.Request(
+			Endpoints.DeleteOne,
+			self.Authentication,
+			DataBody
+		)
+
+		return Data
+	end
+	
+	function Connection:DeleteMany(Filter)
+		local DataBody = MongoRB.ParseBody(self.Payload)
+		DataBody["filter"] = Filter or {}
+
+		local Data = MongoRB.Request(
+			Endpoints.DeleteMany,
+			self.Authentication,
+			DataBody
+		)
+
+		return Data
+	end
+	
     return Connection :: Connection
 end
 
-return RongoDB
+return MongoRB
