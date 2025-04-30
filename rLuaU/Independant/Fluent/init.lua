@@ -1,20 +1,3 @@
---[[ //
-
-	Name: Fluent.lua
-	Author: Enxquity
-	D&T: 10/08/2024 : 19:51 (GMT+1)
-	Type: ModuleScript
-	Path: /StarterPlayer/StarterPlayerScripts/Initialise/UI/
-
-//]]
-
---[[
-	What is fluent?
-	Fluent is a lightweight and efficient UI utility for Roblox, designed to streamline the process of creating and managing user interfaces.
-	Fluent offers a simple and intuitive API for building responsive, dynamic, and maintainable UI components.
-		- Get started by wrapping fluent on a interface object
-]]
-
 export type Wrapper = {
 	Object: Instance;
 	Connections: {RBXScriptConnection};
